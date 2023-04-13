@@ -1,0 +1,102 @@
+#include <iostream>
+#include <queue>
+#include <thread>
+#include <mutex>
+#include <condition_variable>
+#include <chrono>
+#include <ctime>
+#include <cstdlib>
+
+using namespace std;
+
+// Define the traffic signal struct
+struct TrafficSignal {
+    int id;
+    queue<tuple<time_t, int, int>> buffer;
+    mutex lock;
+    condition_variable cv;
+
+    TrafficSignal(int id) : id(id) {}
+};
+
+// Define the traffic producer function
+void produce(TrafficSignal* signal, int measurement_count) {
+    for (int i = 0; i < measurement_count; i++) {
+        time_t timestamp = chrono::system_clock::to_time_t(chrono::system_clock::now());
+        int cars_passed = rand() % 50 + 1;
+        tuple<time_t, int, int> measurement(timestamp, signal->id, cars_passed);
+
+        unique_lock<mutex> ul(signal->lock);
+        signal->buffer.push(measurement);
+        ul.unlock();
+
+        signal->cv.notify_all();
+        this_thread::sleep_for(chrono::seconds(300));
+    }
+}
+
+// Define the traffic consumer function
+void consume(vector<TrafficSignal*> signals, int n) {
+    while (true) {
+        priority_queue<pair<int, int>> congested_signals; // heap to store congested signals
+        for (auto signal : signals) {
+            unique_lock<mutex> ul(signal->lock);
+            signal->cv.wait_for(ul, chrono::hours(1), [&]{ return !signal->buffer.empty(); }); // wait for a measurement to be produced
+            while (!signal->buffer.empty()) {
+                auto measurement = signal->buffer.front();
+                signal->buffer.pop();
+                ul.unlock();
+
+                int total_cars = get<2>(measurement);
+                congested_signals.push(make_pair(total_cars, signal->id));
+
+                ul.lock();
+            }
+            ul.unlock();
+        }
+
+        cout << "Top " << n << " congested traffic signals: ";
+        for (int i = 0; i < n && !congested_signals.empty(); i++) {
+            auto p = congested_signals.top();
+            congested_signals.pop();
+            cout << p.second << " ";
+        }
+        cout << endl;
+
+        this_thread::sleep_for(chrono::hours(1));
+    }
+}
+
+// Define the main function
+int main() {
+    int X = 10; // Number of traffic signals
+    int N = 3; // Number of top congested signals to display
+
+    // Set up the traffic signals
+    vector<TrafficSignal*> signals;
+    for (int i = 0; i < X; i++) {
+        signals.push_back(new TrafficSignal(i));
+    }
+
+    // Start the traffic producers
+    vector<thread> producers;
+    for (auto signal : signals) {
+        producers.emplace_back(produce, signal, 12);
+    }
+
+    // Start the traffic consumer
+    thread consumer(consume, signals, N);
+
+    // Wait for all threads to finish
+    for (auto& t : producers) {
+        t.join();
+    }
+    consumer.join();
+
+    // Clean up the traffic signals
+    for (auto signal : signals) {
+        delete signal;
+    }
+
+    return 0;
+}
